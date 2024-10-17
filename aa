@@ -1,0 +1,130 @@
+import cv2
+import dlib
+import numpy as np
+import os
+from datetime import datetime
+
+# Load your models
+detector = dlib.get_frontal_face_detector()  # Face detector
+landmark_predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")  # Landmark model
+face_rec_model = dlib.face_recognition_model_v1("dlib_face_recognition_resnet_model_v1.dat")  # ResNet model
+
+# Directories
+known_faces_dir = "known_faces"
+attendance_file = "attendance_log.txt"
+os.makedirs(known_faces_dir, exist_ok=True)
+
+# List to store known faces' encodings and names
+known_face_encodings = []
+known_face_names = []
+
+def extract_face_features(image, face):
+    # Detect landmarks
+    landmarks = landmark_predictor(image, face)
+    # Get the 128D face encoding from the ResNet model
+    face_encoding = np.array(face_rec_model.compute_face_descriptor(image, landmarks))
+    return face_encoding
+
+def capture_face(name):
+    cap = cv2.VideoCapture(0)
+    print(f"Capturing face for {name}. Press 'q' to stop.")
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = detector(gray)
+
+        for face in faces:
+            x, y, w, h = (face.left(), face.top(), face.width(), face.height())
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+        cv2.imshow("Capture Face", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            # Save the face and its features
+            for face in faces:
+                face_encoding = extract_face_features(gray, face)
+                known_face_encodings.append(face_encoding)
+                known_face_names.append(name)
+                np.save(os.path.join(known_faces_dir, f"{name}.npy"), face_encoding)
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+def recognize_faces():
+    cap = cv2.VideoCapture(0)
+    print("Recognizing faces... Press 'q' to stop.")
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = detector(gray)
+
+        for face in faces:
+            face_encoding = extract_face_features(gray, face)
+
+            # Compare with known faces
+            matches = []
+            for known_encoding in known_face_encodings:
+                match = np.linalg.norm(face_encoding - known_encoding)
+                matches.append(match)
+
+            min_match = min(matches) if matches else float("inf")
+            if min_match < 0.6:  # Threshold for face recognition
+                matched_index = matches.index(min_match)
+                name = known_face_names[matched_index]
+                log_attendance(name)
+
+                # Display recognition box and name
+                x, y, w, h = (face.left(), face.top(), face.width(), face.height())
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(frame, name, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+        cv2.imshow("Face Recognition", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+def log_attendance(name):
+    now = datetime.now()
+    time_string = now.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Check if already logged in the last 5 minutes
+    with open(attendance_file, "a+") as f:
+        f.seek(0)
+        lines = f.readlines()
+        if not any(name in line and time_string.split()[0] in line for line in lines):
+            f.write(f"{name}, {time_string}\n")
+            print(f"Attendance recorded for {name} at {time_string}")
+
+def load_known_faces():
+    for file_name in os.listdir(known_faces_dir):
+        if file_name.endswith(".npy"):
+            face_encoding = np.load(os.path.join(known_faces_dir, file_name))
+            name = os.path.splitext(file_name)[0]
+            known_face_encodings.append(face_encoding)
+            known_face_names.append(name)
+    print(f"Loaded {len(known_face_names)} faces from database.")
+
+def main():
+    load_known_faces()
+    choice = input("1. Register new face\n2. Recognize faces\nChoose option (1/2): ")
+
+    if choice == "1":
+        name = input("Enter the name of the person: ")
+        capture_face(name)
+    elif choice == "2":
+        recognize_faces()
+
+if __name__ == "__main__":
+    main()
