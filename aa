@@ -1,130 +1,133 @@
 import cv2
-import dlib
-import numpy as np
 import os
+import dlib
+import time
+import numpy as np
 from datetime import datetime
 
-# Load your models
-detector = dlib.get_frontal_face_detector()  # Face detector
-landmark_predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")  # Landmark model
-face_rec_model = dlib.face_recognition_model_v1("dlib_face_recognition_resnet_model_v1.dat")  # ResNet model
+# Path to the shape predictor and face recognition model
+predictor_path = "shape_predictor_68_face_landmarks.dat"
+face_rec_model_path = "dlib_face_recognition_resnet_model_v1.dat"
 
-# Directories
-known_faces_dir = "known_faces"
-attendance_file = "attendance_log.txt"
-os.makedirs(known_faces_dir, exist_ok=True)
+# Initialize dlib's face detector and load the models
+detector = dlib.get_frontal_face_detector()
+shape_predictor = dlib.shape_predictor(predictor_path)
+face_rec_model = dlib.face_recognition_model_v1(face_rec_model_path)
 
-# List to store known faces' encodings and names
-known_face_encodings = []
-known_face_names = []
+# Directory to store face data
+faces_dir = "faces_data"
+os.makedirs(faces_dir, exist_ok=True)
 
-def extract_face_features(image, face):
-    # Detect landmarks
-    landmarks = landmark_predictor(image, face)
-    # Get the 128D face encoding from the ResNet model
-    face_encoding = np.array(face_rec_model.compute_face_descriptor(image, landmarks))
-    return face_encoding
-
+# Function to capture and save faces
 def capture_face(name):
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0)  # 0 for the default camera
+    count = 0
+    
+    # Create directory to store images of the person
+    person_dir = os.path.join(faces_dir, name)
+    os.makedirs(person_dir, exist_ok=True)
+    
     print(f"Capturing face for {name}. Press 'q' to stop.")
     
     while True:
         ret, frame = cap.read()
         if not ret:
+            print("Error capturing image")
             break
-
+        
+        # Convert frame to grayscale for faster face detection
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Detect faces
         faces = detector(gray)
-
+        
         for face in faces:
-            x, y, w, h = (face.left(), face.top(), face.width(), face.height())
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-        cv2.imshow("Capture Face", frame)
-
+            # Extract facial landmarks
+            shape = shape_predictor(gray, face)
+            
+            # Compute the 128D face descriptor
+            face_descriptor = face_rec_model.compute_face_descriptor(frame, shape)
+            
+            # Save face descriptor to a file
+            np.save(os.path.join(person_dir, f"face_{count}.npy"), face_descriptor)
+            
+            # Save the frame with the face
+            img_path = os.path.join(person_dir, f"{name}_{count}.jpg")
+            cv2.imwrite(img_path, frame)
+            print(f"Captured {img_path}")
+            
+            count += 1
+        
+        # Press 'q' to stop capturing
         if cv2.waitKey(1) & 0xFF == ord('q'):
-            # Save the face and its features
-            for face in faces:
-                face_encoding = extract_face_features(gray, face)
-                known_face_encodings.append(face_encoding)
-                known_face_names.append(name)
-                np.save(os.path.join(known_faces_dir, f"{name}.npy"), face_encoding)
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
+# Function to recognize faces
 def recognize_faces():
     cap = cv2.VideoCapture(0)
-    print("Recognizing faces... Press 'q' to stop.")
+    known_face_descriptors = []
+    known_names = []
+
+    # Load known faces
+    for person_name in os.listdir(faces_dir):
+        person_dir = os.path.join(faces_dir, person_name)
+        for file in os.listdir(person_dir):
+            if file.endswith(".npy"):
+                face_descriptor = np.load(os.path.join(person_dir, file))
+                known_face_descriptors.append(face_descriptor)
+                known_names.append(person_name)
+
+    print("Recognizing faces. Press 'q' to stop.")
     
     while True:
         ret, frame = cap.read()
         if not ret:
+            print("Error capturing image")
             break
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = detector(gray)
 
         for face in faces:
-            face_encoding = extract_face_features(gray, face)
+            shape = shape_predictor(gray, face)
+            face_descriptor = face_rec_model.compute_face_descriptor(frame, shape)
 
-            # Compare with known faces
-            matches = []
-            for known_encoding in known_face_encodings:
-                match = np.linalg.norm(face_encoding - known_encoding)
-                matches.append(match)
-
-            min_match = min(matches) if matches else float("inf")
-            if min_match < 0.6:  # Threshold for face recognition
-                matched_index = matches.index(min_match)
-                name = known_face_names[matched_index]
-                log_attendance(name)
-
-                # Display recognition box and name
-                x, y, w, h = (face.left(), face.top(), face.width(), face.height())
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(frame, name, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-
-        cv2.imshow("Face Recognition", frame)
-
+            # Compare face with known faces
+            distances = np.linalg.norm(known_face_descriptors - face_descriptor, axis=1)
+            min_distance_idx = np.argmin(distances)
+            
+            if distances[min_distance_idx] < 0.6:  # Threshold for recognizing
+                name = known_names[min_distance_idx]
+                print(f"Recognized: {name}")
+                
+                # Log the recognized name and time
+                with open("attendance_log.txt", "a") as f:
+                    log = f"{name}, {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f.write(log)
+                    print(f"Logged: {log}")
+            
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
-def log_attendance(name):
-    now = datetime.now()
-    time_string = now.strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Check if already logged in the last 5 minutes
-    with open(attendance_file, "a+") as f:
-        f.seek(0)
-        lines = f.readlines()
-        if not any(name in line and time_string.split()[0] in line for line in lines):
-            f.write(f"{name}, {time_string}\n")
-            print(f"Attendance recorded for {name} at {time_string}")
-
-def load_known_faces():
-    for file_name in os.listdir(known_faces_dir):
-        if file_name.endswith(".npy"):
-            face_encoding = np.load(os.path.join(known_faces_dir, file_name))
-            name = os.path.splitext(file_name)[0]
-            known_face_encodings.append(face_encoding)
-            known_face_names.append(name)
-    print(f"Loaded {len(known_face_names)} faces from database.")
-
+# Main function to choose between registration and recognition
 def main():
-    load_known_faces()
-    choice = input("1. Register new face\n2. Recognize faces\nChoose option (1/2): ")
+    print("1. Register new face")
+    print("2. Recognize faces")
+    choice = input("Choose option (1/2): ")
 
-    if choice == "1":
+    if choice == '1':
         name = input("Enter the name of the person: ")
         capture_face(name)
-    elif choice == "2":
+    elif choice == '2':
         recognize_faces()
+    else:
+        print("Invalid choice. Please choose 1 or 2.")
 
 if __name__ == "__main__":
     main()
