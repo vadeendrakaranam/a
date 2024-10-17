@@ -1,159 +1,105 @@
+import dlib
+import numpy as np
 import cv2
 import os
-import dlib
+import pandas as pd
 import time
-import numpy as np
-from datetime import datetime
+import sqlite3
+import datetime
 
-# Path to the shape predictor and face recognition model
-predictor_path = "shape_predictor_68_face_landmarks.dat"
-face_rec_model_path = "dlib_face_recognition_resnet_model_v1.dat"
-
-# Initialize dlib's face detector and load the models
+# Dlib face detector and shape predictor
 detector = dlib.get_frontal_face_detector()
-shape_predictor = dlib.shape_predictor(predictor_path)
-face_rec_model = dlib.face_recognition_model_v1(face_rec_model_path)
+predictor = dlib.shape_predictor('data/data_dlib/shape_predictor_68_face_landmarks.dat')
+face_reco_model = dlib.face_recognition_model_v1("data/data_dlib/dlib_face_recognition_resnet_model_v1.dat")
 
-# Directory to store face data
-faces_dir = "faces_data"
-os.makedirs(faces_dir, exist_ok=True)
+# Create a connection to the SQLite database
+conn = sqlite3.connect("attendance.db")
+cursor = conn.cursor()
 
-# Function to capture and save faces with a live preview
-def capture_face(name):
-    cap = cv2.VideoCapture(0)  # 0 for the default camera
-    count = 0
-    
-    # Create directory to store images of the person
-    person_dir = os.path.join(faces_dir, name)
-    os.makedirs(person_dir, exist_ok=True)
-    
-    print(f"Capturing face for {name}. Capturing for 10 seconds...")
-    
-    start_time = time.time()
-    capture_duration = 10  # Capture for 10 seconds
-    
-    while int(time.time() - start_time) < capture_duration:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error capturing image")
-            break
-        
-        # Convert frame to grayscale for faster face detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Detect faces
-        faces = detector(gray)
-        
-        for face in faces:
-            # Extract facial landmarks
-            shape = shape_predictor(gray, face)
-            
-            # Compute the 128D face descriptor
-            face_descriptor = face_rec_model.compute_face_descriptor(frame, shape)
-            
-            # Save face descriptor to a file
-            np.save(os.path.join(person_dir, f"face_{count}.npy"), face_descriptor)
-            
-            # Save the frame with the face
-            img_path = os.path.join(person_dir, f"{name}_{count}.jpg")
-            cv2.imwrite(img_path, frame)
-            print(f"Captured {img_path}")
-            
-            count += 1
-        
-        # Display the live video feed with detected faces
-        for face in faces:
-            x, y, w, h = (face.left(), face.top(), face.width(), face.height())
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)  # Draw rectangle around the face
-        
-        cv2.imshow("Face Capture - Press 'q' to Exit", frame)
-        
-        # Exit capture if 'q' is pressed
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+# Create table for attendance
+table_name = "attendance"
+create_table_sql = f"CREATE TABLE IF NOT EXISTS {table_name} (name TEXT, time TEXT, date DATE, UNIQUE(name, date))"
+cursor.execute(create_table_sql)
+conn.commit()
+conn.close()
 
-    cap.release()
-    cv2.destroyAllWindows()
-    print(f"Face capture for {name} completed.")
+class FaceRecognizer:
+    def __init__(self):
+        self.face_features_known_list = []
+        self.face_name_known_list = []
+        self.current_frame_face_centroid_list = []
+        self.current_frame_face_name_list = []
+        self.current_frame_face_cnt = 0
+        self.font = cv2.FONT_ITALIC
 
-# Function to recognize faces
-def recognize_faces():
-    cap = cv2.VideoCapture(0)
-    known_face_descriptors = []
-    known_names = []
+    def get_face_database(self):
+        if os.path.exists("data/features_all.csv"):
+            csv_rd = pd.read_csv("data/features_all.csv", header=None)
+            for i in range(csv_rd.shape[0]):
+                features = [csv_rd.iloc[i][j] for j in range(1, 129)]
+                self.face_name_known_list.append(csv_rd.iloc[i][0])
+                self.face_features_known_list.append(features)
+            return True
+        else:
+            print("'features_all.csv' not found!")
+            return False
 
-    # Load known faces
-    for person_name in os.listdir(faces_dir):
-        person_dir = os.path.join(faces_dir, person_name)
-        for file in os.listdir(person_dir):
-            if file.endswith(".npy"):
-                face_descriptor = np.load(os.path.join(person_dir, file))
-                known_face_descriptors.append(face_descriptor)
-                known_names.append(person_name)
+    def return_euclidean_distance(self, feature_1, feature_2):
+        return np.linalg.norm(np.array(feature_1) - np.array(feature_2))
 
-    print("Recognizing faces. Capturing for 10 seconds...")
-    
-    start_time = time.time()
-    capture_duration = 10  # Capture for 10 seconds
-    
-    while int(time.time() - start_time) < capture_duration:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error capturing image")
-            break
+    def attendance(self, name):
+        current_date = datetime.datetime.now().strftime('%Y-%m-%d')
+        conn = sqlite3.connect("attendance.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM attendance WHERE name = ? AND date = ?", (name, current_date))
+        existing_entry = cursor.fetchone()
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = detector(gray)
+        if not existing_entry:
+            current_time = datetime.datetime.now().strftime('%H:%M:%S')
+            cursor.execute("INSERT INTO attendance (name, time, date) VALUES (?, ?, ?)", (name, current_time, current_date))
+            conn.commit()
+            print(f"{name} marked as present at {current_time}")
+        conn.close()
 
-        for face in faces:
-            shape = shape_predictor(gray, face)
-            face_descriptor = face_rec_model.compute_face_descriptor(frame, shape)
+    def process(self, stream):
+        if self.get_face_database():
+            while stream.isOpened():
+                _, img_rd = stream.read()
+                faces = detector(img_rd, 0)
+                self.current_frame_face_cnt = len(faces)
+                self.current_frame_face_centroid_list = []
 
-            # Convert face_descriptor (Dlib vector) to a numpy array
-            face_descriptor = np.array(face_descriptor)
+                if self.current_frame_face_cnt > 0:
+                    for face in faces:
+                        shape = predictor(img_rd, face)
+                        face_feature = face_reco_model.compute_face_descriptor(img_rd, shape)
+                        distances = [self.return_euclidean_distance(face_feature, feature) for feature in self.face_features_known_list]
 
-            # Compare face with known faces
-            distances = np.linalg.norm(np.array(known_face_descriptors) - face_descriptor, axis=1)
-            min_distance_idx = np.argmin(distances)
-            
-            if distances[min_distance_idx] < 0.6:  # Threshold for recognizing
-                name = known_names[min_distance_idx]
-                print(f"Recognized: {name}")
-                
-                # Log the recognized name and time
-                with open("attendance_log.txt", "a") as f:
-                    log = f"{name}, {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f.write(log)
-                    print(f"Logged: {log}")
+                        if min(distances) < 0.6:
+                            name = self.face_name_known_list[distances.index(min(distances))]
+                        else:
+                            name = "unknown"
 
-        # Display the live video feed with detected faces
-        for face in faces:
-            x, y, w, h = (face.left(), face.top(), face.width(), face.height())
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)  # Draw rectangle around the face
+                        self.current_frame_face_centroid_list.append([int((face.left() + face.right()) / 2), int((face.top() + face.bottom()) / 2)])
+                        self.current_frame_face_name_list.append(name)
 
-        cv2.imshow("Face Recognition - Press 'q' to Exit", frame)
-        
-        # Exit recognition if 'q' is pressed
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+                        # Mark attendance
+                        if name != "unknown":
+                            self.attendance(name)
 
-    cap.release()
-    cv2.destroyAllWindows()
-    print("Face recognition completed.")
+                        # Draw rectangles around the face
+                        cv2.rectangle(img_rd, (face.left(), face.top()), (face.right(), face.bottom()), (255, 255, 255), 2)
+                        cv2.putText(img_rd, name, (face.left(), face.top() - 10), self.font, 0.8, (0, 255, 255), 1)
 
-# Main function to choose between registration and recognition
-def main():
-    print("1. Register new face")
-    print("2. Recognize faces")
-    choice = input("Choose option (1/2): ")
+                cv2.imshow("Face Recognizer", img_rd)
 
-    if choice == '1':
-        name = input("Enter the name of the person: ")
-        capture_face(name)
-    elif choice == '2':
-        recognize_faces()
-    else:
-        print("Invalid choice. Please choose 1 or 2.")
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
-if __name__ == "__main__":
-    main()
+            stream.release()
+            cv2.destroyAllWindows()
+
+# Start the face recognition process
+cap = cv2.VideoCapture(0)
+recognizer = FaceRecognizer()
+recognizer.process(cap)
