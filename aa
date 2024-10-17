@@ -27,9 +27,12 @@ def capture_face(name):
     person_dir = os.path.join(faces_dir, name)
     os.makedirs(person_dir, exist_ok=True)
     
-    print(f"Capturing face for {name}. Press 'q' to stop.")
+    print(f"Capturing face for {name}. Capturing for 10 seconds...")
     
-    while True:
+    start_time = time.time()
+    capture_duration = 10  # Capture for 10 seconds
+    
+    while int(time.time() - start_time) < capture_duration:
         ret, frame = cap.read()
         if not ret:
             print("Error capturing image")
@@ -57,14 +60,10 @@ def capture_face(name):
             print(f"Captured {img_path}")
             
             count += 1
-        
-        # Press 'q' to stop capturing
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
 
     cap.release()
-    cv2.destroyAllWindows()
-
+    print(f"Face capture for {name} completed.")
+    
 # Function to recognize faces
 def recognize_faces():
     cap = cv2.VideoCapture(0)
@@ -80,9 +79,12 @@ def recognize_faces():
                 known_face_descriptors.append(face_descriptor)
                 known_names.append(person_name)
 
-    print("Recognizing faces. Press 'q' to stop.")
+    print("Recognizing faces. Capturing for 10 seconds...")
     
-    while True:
+    start_time = time.time()
+    capture_duration = 10  # Capture for 10 seconds
+    
+    while int(time.time() - start_time) < capture_duration:
         ret, frame = cap.read()
         if not ret:
             print("Error capturing image")
@@ -108,12 +110,9 @@ def recognize_faces():
                     log = f"{name}, {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f.write(log)
                     print(f"Logged: {log}")
-            
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
 
     cap.release()
-    cv2.destroyAllWindows()
+    print("Face recognition completed.")
 
 # Main function to choose between registration and recognition
 def main():
